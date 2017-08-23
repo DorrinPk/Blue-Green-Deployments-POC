@@ -1,0 +1,180 @@
+Resources: 
+
+  LoadBalancerSecurityGroup:
+     Type: AWS::EC2::SecurityGroup
+     Properties:
+       GroupDescription: "allow port 80 to be accessed from anywhere"
+       SecurityGroupIngress: 
+         - 
+          IpProtocol: "tcp"
+          FromPort: "80"
+          ToPort: "80"
+          CidrIp: "0.0.0.0/0"
+         - 
+          IpProtocol: "tcp"
+          FromPort: "80"
+          ToPort: "80"
+          SourceSecurityGroupId : !Ref WebServerSecurityGroup  
+       VpcId: !Ref VPC   
+
+  
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Name: WebServerALB
+      Subnets:
+      - Ref: ALBSubnet1
+      - Ref : ALBSubnet2
+      SecurityGroups: 
+      - Ref: "LoadBalancerSecurityGroup"
+   
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+       - Type: forward
+         TargetGroupArn: !Ref DefaultTargetGroup
+      LoadBalancerArn:
+        Ref: LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  DefaultTargetGroup:
+     Type: AWS::ElasticLoadBalancingV2::TargetGroup
+     Properties:
+       HealthCheckIntervalSeconds: 30
+       HealthCheckProtocol: HTTP
+       HealthCheckPort: 80
+       HealthCheckTimeoutSeconds: 10
+       HealthCheckPath: /
+       HealthyThresholdCount: 4
+       Matcher:
+        HttpCode: '200'
+       Name: default
+       VpcId: !Ref VPC
+       Port: 80
+       Protocol: HTTP      
+       TargetGroupAttributes:
+       - Key: deregistration_delay.timeout_seconds
+         Value: '20'
+       UnhealthyThresholdCount: 3
+  
+
+  WebServerSecurityGroup:
+     Type: AWS::EC2::SecurityGroup
+     Properties:
+       GroupDescription: "Enable ALB access on port 80"
+       SecurityGroupIngress:
+         -  
+          IpProtocol: "tcp"
+          ToPort: "80"
+          FromPort: "80"
+          CidrIp: "0.0.0.0/0"
+       VpcId: !Ref VPC    
+
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties: 
+     ImageId: ami-d15a75c7
+     InstanceType:
+       Ref: InstanceType
+     KeyName:
+       Ref: KeyName
+     AssociatePublicIpAddress: true
+     SecurityGroups: [!Ref WebServerSecurityGroup]
+     UserData: 
+      Fn::Base64: !Sub |
+         #!/bin/bash -xe
+         apt-get update -y 
+         apt-get install nginx -y 
+         echo "BlueStack!" >> /var/www/html/index.html
+         service nginx restart      
+
+  AutoScaling:
+   Type: AWS::AutoScaling::AutoScalingGroup
+   Properties: 
+     LaunchConfigurationName: !Ref LaunchConfig
+     MaxSize: 2
+     MinSize: 1
+     DesiredCapacity: 1 
+     HealthCheckType: ELB
+     VPCZoneIdentifier: [!Ref EC2Subnet]
+     TargetGroupARNs: [!Ref DefaultTargetGroup]
+     HealthCheckGracePeriod: 300
+
+  ALBAlarm:
+      Type: "AWS::CloudWatch::Alarm"
+      Properties: 
+        AlarmName : "WebserverDown"
+        ComparisonOperator: "GreaterThanOrEqualToThreshold"
+        EvaluationPeriods: "1" 
+        MetricName: "UnHealthyHostCount"
+        Namespace: "AWS/ApplicationELB"
+        Period: "60"
+        Statistic: "Average"
+        Threshold: "1"
+        Dimensions: 
+          - Name: TargetGroup
+            Value: !GetAtt DefaultTargetGroup.TargetGroupFullName
+          - Name: LoadBalancer
+            Value: !GetAtt LoadBalancer.LoadBalancerFullName
+            
+
+Parameters:
+  KeyName:
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: String
+  InstanceType:
+    AllowedValues:
+    - t1.micro
+    - t2.nano
+    - t2.micro
+    - t2.small
+    - t2.medium
+    - t2.large
+    - m1.small
+    - m1.medium
+    - m1.large
+    - m1.xlarge
+    - m2.xlarge
+    - m2.2xlarge
+    - m2.4xlarge
+    - m3.medium
+    - m3.large
+    - m3.xlarge
+    - m3.2xlarge
+    - m4.large
+     
+    ConstraintDescription: must be a valid EC2 instance type.
+    Default: t2.small
+    Description: WebServer EC2 instance type
+    Type: String   
+
+  EnvironmentName:
+    Description: Type of the environment for application. Prod or dev. 
+    Type: String
+
+  VPC:
+    Description: Choose a VPC for all your resources.
+    Type: AWS::EC2::VPC::Id 
+    
+  ALBSubnet1:
+    Description: Choose first public subnet for the application load balancer
+    Type: AWS::EC2::Subnet::Id
+
+  ALBSubnet2:
+    Description: Choose second public subnet for the application load balancer
+    Type: AWS::EC2::Subnet::Id  
+
+  EC2Subnet:
+    Description: Choose a private subnet for the webserver instance 
+    Type: AWS::EC2::Subnet::Id   
+  
+Outputs: 
+  LoadBalancer:
+    Description: DNS name of the load balancer
+    Value: !GetAtt LoadBalancer.DNSName
